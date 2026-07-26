@@ -45,6 +45,22 @@ describe('buildContainerArgs ordering invariant (structural)', () => {
     expect(gatewayApply).toBeGreaterThan(-1);
     expect(gatewayApply).toBeGreaterThan(mountsLoop);
   });
+
+  // The SDK sources its cert/stub mounts from os.tmpdir(), which VM-based
+  // runtimes don't reliably share with the VM (Docker then binds silent empty
+  // dirs). stageGatewayMounts rewrites those sources under data/ and must run
+  // after the SDK has appended them — scanning from a length captured before
+  // the apply.
+  it('restages tmpdir-sourced gateway mounts after the gateway apply', () => {
+    const src = fs.readFileSync(path.join(process.cwd(), 'src', 'container-runner.ts'), 'utf-8');
+    const lengthCapture = src.indexOf('const gatewayArgsStart = args.length');
+    const gatewayApply = src.indexOf('onecli.applyContainerConfig');
+    const staging = src.indexOf('stageGatewayMounts(args, gatewayArgsStart)');
+    expect(lengthCapture).toBeGreaterThan(-1);
+    expect(staging).toBeGreaterThan(-1);
+    expect(lengthCapture).toBeLessThan(gatewayApply);
+    expect(staging).toBeGreaterThan(gatewayApply);
+  });
 });
 
 describe('per-container resource limits (structural)', () => {

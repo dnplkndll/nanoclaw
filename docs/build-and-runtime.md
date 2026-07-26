@@ -73,6 +73,7 @@ Any failure fails the PR.
 - **Named SQL parameters in the container require the prefix in JS object keys.** `bun:sqlite` does not auto-strip `@`/`$`/`:` the way `better-sqlite3` does on the host. Use `$name` in both SQL and keys: `.run({ $id: msg.id })`. Positional `?` params work normally.
 - **Agent-runner tests run under `bun:test`, not vitest.** `vitest.config.ts` excludes the `container/agent-runner/` tree because vitest runs on Node and can't load `bun:sqlite`.
 - **No tsc build step in the container image.** Re-adding one would reintroduce the ~200-500ms per-session-wake cost we removed.
+- **Container bind-mount sources must live under the project tree, never `os.tmpdir()`.** VM-based runtimes share only limited host paths with the VM (Colima: `$HOME`), and Docker silently binds an empty directory when it can't see a source. The OneCLI gateway's cert/stub mounts are restaged from tmpdir into `data/onecli-mounts/` for this reason (`src/onecli-mount-staging.ts`).
 - **Global container CLIs stay on pnpm, not Bun.** `agent-browser`, `@anthropic-ai/claude-code`, `vercel` and any future Node CLIs the agent invokes should be pinned versions under the Dockerfile's pnpm global-install block. `bun install -g` would bypass the pnpm supply-chain policy.
 
 ## Migration history
