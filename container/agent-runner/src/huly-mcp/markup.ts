@@ -12,8 +12,9 @@ type Node = Record<string, unknown>;
 
 function inline(text: string): Node[] {
   const nodes: Node[] = [];
-  // Order matters: links first, then code, bold, italic.
-  const pattern = /(\[[^\]]+\]\([^)]+\)|`[^`]+`|\*\*[^*]+\*\*|_[^_]+_)/g;
+  // Order matters: links first, then code, bold, italic. Underscore-italics
+  // require surrounding boundaries so snake_case identifiers aren't mangled.
+  const pattern = /(\[[^\]]+\]\([^)]+\)|`[^`]+`|\*\*[^*]+\*\*|(?<![A-Za-z0-9])_[^_]+_(?![A-Za-z0-9]))/g;
   let last = 0;
   let m: RegExpExecArray | null;
   const push = (t: string, marks?: Node[]) => {

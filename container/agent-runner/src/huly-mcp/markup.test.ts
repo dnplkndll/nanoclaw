@@ -38,4 +38,11 @@ describe('markdownToProseMirror', () => {
     const doc = markdownToProseMirror('') as { content: Node[] };
     expect(doc.content.length).toBeGreaterThan(0);
   });
+
+  it('does not treat snake_case underscores as italics', () => {
+    const doc = markdownToProseMirror('run my_local_var now') as { content: Node[] };
+    const spans = doc.content[0].content as Node[];
+    // No italic mark should appear; the whole line stays one plain text run.
+    expect(spans.some((n) => Array.isArray((n as Node).marks))).toBe(false);
+  });
 });

@@ -20,22 +20,30 @@ async function call(def: McpToolDefinition, args: Record<string, unknown>, label
   return text;
 }
 
-const created = await call(
-  createIssue,
-  {
-    project,
-    title: 'NanoClaw MCP smoke test',
-    description: '# Smoke\n\nCreated by the **Huly MCP** smoke test.\n\n- one\n- two',
-    priority: 'low',
-  },
-  'create_issue',
-);
-const identifier = created.match(/Created (\S+)/)?.[1] ?? '';
-await call(listIssues, { project, limit: 5 }, 'list_issues');
-await call(
-  commentIssue,
-  { identifier, message: 'Smoke comment with `code` and a [link](https://huly.io).' },
-  'comment_issue',
-);
-await call(updateIssue, { identifier, status: 'done' }, 'update_issue');
-console.log(`\nSmoke passed. Created + closed ${identifier} in ${project}. Delete it in the Huly UI when done.`);
+async function main(): Promise<void> {
+  const created = await call(
+    createIssue,
+    {
+      project,
+      title: 'NanoClaw MCP smoke test',
+      description: '# Smoke\n\nCreated by the **Huly MCP** smoke test.\n\n- one\n- two',
+      priority: 'low',
+    },
+    'create_issue',
+  );
+  const identifier = created.match(/Created (\S+)/)?.[1] ?? '';
+  await call(listIssues, { project, limit: 5 }, 'list_issues');
+  await call(
+    commentIssue,
+    { identifier, message: 'Smoke comment with `code` and a [link](https://huly.io).' },
+    'comment_issue',
+  );
+  await call(updateIssue, { identifier, status: 'done' }, 'update_issue');
+  console.log(`\nSmoke passed. Created + closed ${identifier} in ${project}. Delete it in the Huly UI when done.`);
+}
+
+// Only runs when executed directly (never on import), so the live writes here
+// can't fire as a side effect of loading a tool module.
+if (import.meta.main) {
+  await main();
+}

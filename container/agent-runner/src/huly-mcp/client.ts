@@ -90,6 +90,21 @@ export async function primarySocialId(): Promise<string> {
   return cachedSocialId;
 }
 
+let cachedEmployeeRef: string | undefined;
+
+/**
+ * The bot's own Employee ref (a workspace-local Person id), resolved from its
+ * primary social id. This is what ToDo.user / Issue.assignee expect — distinct
+ * from the social id used in modifiedBy.
+ */
+export async function botEmployeeRef(): Promise<string | undefined> {
+  if (cachedEmployeeRef !== undefined) return cachedEmployeeRef || undefined;
+  const socialId = await primarySocialId();
+  const identity = await findOne<{ attachedTo?: string }>('contact:class:SocialIdentity', { _id: socialId });
+  cachedEmployeeRef = identity?.attachedTo ?? '';
+  return cachedEmployeeRef || undefined;
+}
+
 export function genId(): string {
   // 24-hex object id, matching Huly's Ref format.
   let s = '';
@@ -150,9 +165,10 @@ export async function setBody(
   try {
     const r = await collaboratorRpc(objectId, objectClass, objectAttr, 'createContent', payload);
     ref = r.content?.[objectAttr];
-  } catch (err) {
-    if (!(err instanceof HulyError) || err.status !== 500) throw err;
-    // createContent rejects when content already exists → update in place.
+  } catch {
+    // createContent rejects when content already exists (the exact status
+    // varies), so fall back to updating in place on any create error and keep
+    // the existing ref.
     await collaboratorRpc(objectId, objectClass, objectAttr, 'updateContent', payload);
     const existing = await findOne<Record<string, string>>(objectClass, { _id: objectId });
     ref = existing?.[objectAttr];

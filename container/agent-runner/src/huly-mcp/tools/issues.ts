@@ -13,17 +13,33 @@ import { err, ok } from '../util.js';
 
 // Issue statuses and task types are per project TYPE in Huly, not global — a
 // status like `tracker:status:Todo` is valid in one project and rejected in
-// another. So a status word is mapped to a status *category*, then resolved to
-// the concrete status id the project actually uses.
-const STATUS_CATEGORY: Record<string, string> = {
-  backlog: 'Backlog',
-  todo: 'Unstarted',
-  inprogress: 'Started',
+// another. So a status word maps to a status *category* (the stable
+// `task:statusCategory:*` ids, verified against models/tracker), then resolves
+// to the concrete status id the project actually uses.
+const WORD_TO_CATEGORY: Record<string, string> = {
+  backlog: 'UnStarted',
+  todo: 'ToDo',
+  inprogress: 'Active',
   done: 'Won',
   cancelled: 'Lost',
   canceled: 'Lost',
 };
+const CATEGORY_TO_WORD: Record<string, string> = {
+  UnStarted: 'backlog',
+  ToDo: 'todo',
+  Active: 'inprogress',
+  Won: 'done',
+  Lost: 'cancelled',
+};
 const PRIORITY: Record<string, number> = { nopriority: 0, urgent: 1, high: 2, medium: 3, low: 4 };
+const PRIORITY_WORD = ['nopriority', 'urgent', 'high', 'medium', 'low'];
+
+export function statusWord(category: string | undefined): string {
+  return (category && CATEGORY_TO_WORD[category.split(':').pop() ?? '']) || 'unknown';
+}
+export function priorityWord(n: number | undefined): string {
+  return PRIORITY_WORD[n ?? 0] ?? 'unknown';
+}
 
 interface Project {
   _id: string;
@@ -43,6 +59,7 @@ interface ProjectMeta {
   kind: string;
   defaultStatus: string;
   statusByCategory: Record<string, string>;
+  categoryById: Record<string, string>;
 }
 
 async function resolveProject(idOrIdentifier: string): Promise<Project | null> {
@@ -53,31 +70,39 @@ async function resolveProject(idOrIdentifier: string): Promise<Project | null> {
   return all.find((p) => p.identifier === idOrIdentifier) ?? null;
 }
 
-/** Resolve the project's issue task type and its valid statuses (by category). */
-async function projectMeta(project: Project): Promise<ProjectMeta> {
+/**
+ * Resolve the project's issue task type and its valid statuses (by category).
+ * Returns null when the project type has no Issue task type — callers must
+ * error rather than fall back to a foreign task type / empty status.
+ */
+async function projectMeta(project: Project): Promise<ProjectMeta | null> {
   const taskTypes = await findAll<{ _id: string; parent?: string; name?: string; statuses?: string[] }>(
     'task:class:TaskType',
     {},
     { limit: 200 },
   );
   const issueType = taskTypes.find((t) => t.parent === project.type && t.name === 'Issue');
-  const kind = issueType?._id ?? 'tracker:taskTypes:Issue';
-  const statusIds = new Set(issueType?.statuses ?? []);
+  if (!issueType) return null;
+  const statusIds = new Set(issueType.statuses ?? []);
   const allStatuses = await findAll<IssueStatus>('tracker:class:IssueStatus', {}, { limit: 300 });
   const statusByCategory: Record<string, string> = {};
+  const categoryById: Record<string, string> = {};
   for (const s of allStatuses) {
     if (!statusIds.has(s._id)) continue;
     const cat = s.category?.split(':').pop();
-    if (cat && !(cat in statusByCategory)) statusByCategory[cat] = s._id;
+    if (cat) {
+      categoryById[s._id] = cat;
+      if (!(cat in statusByCategory)) statusByCategory[cat] = s._id;
+    }
   }
   const defaultStatus =
-    project.defaultIssueStatus ?? statusByCategory.Backlog ?? Object.values(statusByCategory)[0] ?? '';
-  return { kind, defaultStatus, statusByCategory };
+    project.defaultIssueStatus ?? statusByCategory.UnStarted ?? Object.values(statusByCategory)[0] ?? '';
+  return { kind: issueType._id, defaultStatus, statusByCategory, categoryById };
 }
 
 function statusFor(meta: ProjectMeta, word: string | undefined): string {
   if (!word) return meta.defaultStatus;
-  const category = STATUS_CATEGORY[word.toLowerCase()];
+  const category = WORD_TO_CATEGORY[word.toLowerCase()];
   return (category && meta.statusByCategory[category]) || meta.defaultStatus;
 }
 
@@ -120,6 +145,7 @@ export const listIssues: McpToolDefinition = {
   async handler(args) {
     const project = await resolveProject(String(args.project ?? ''));
     if (!project) return err(`project not found: ${String(args.project)}`);
+    const meta = await projectMeta(project);
     const issues = await findAll<Record<string, unknown>>(
       'tracker:class:Issue',
       { space: project._id },
@@ -128,10 +154,10 @@ export const listIssues: McpToolDefinition = {
     const rows = issues.map((i) => ({
       identifier: i.identifier,
       title: i.title,
-      status: i.status,
-      priority: i.priority,
+      // Report status/priority in the same vocabulary the write tools accept.
+      status: statusWord(meta?.categoryById[String(i.status)]),
+      priority: priorityWord(i.priority as number),
       assignee: i.assignee,
-      _id: i._id,
     }));
     return ok(JSON.stringify(rows, null, 2));
   },
@@ -147,8 +173,9 @@ export const createIssue: McpToolDefinition = {
         project: { type: 'string', description: 'Project _id or identifier' },
         title: { type: 'string' },
         description: { type: 'string', description: 'Markdown body (optional)' },
-        status: { type: 'string', description: 'backlog|todo|inprogress|done|cancelled (default todo)' },
+        status: { type: 'string', description: 'backlog|todo|inprogress|done|cancelled (default: project default)' },
         priority: { type: 'string', description: 'nopriority|urgent|high|medium|low (default medium)' },
+        assignee: { type: 'string', description: 'Employee ref to assign (optional; see huly_list_members)' },
       },
       required: ['project', 'title'],
     },
@@ -161,9 +188,11 @@ export const createIssue: McpToolDefinition = {
 
     const social = await primarySocialId();
     const meta = await projectMeta(project);
+    if (!meta) return err(`project ${project.identifier} has no Issue task type`);
     const number = (project.sequence ?? 0) + 1;
     const issueId = genId();
     const status = statusFor(meta, args.status != null ? String(args.status) : undefined);
+    if (!status) return err(`could not resolve a status for project ${project.identifier}`);
     const priority = PRIORITY[String(args.priority ?? 'medium').toLowerCase()] ?? PRIORITY.medium;
 
     await tx({
@@ -196,13 +225,14 @@ export const createIssue: McpToolDefinition = {
         dueDate: null,
         component: null,
         milestone: null,
-        assignee: null,
+        assignee: args.assignee ? String(args.assignee) : null,
       },
       modifiedBy: social,
       modifiedOn: now(),
     });
 
-    // Bump the project sequence so the next issue gets the next number.
+    // Bump the project sequence with an atomic increment so two concurrent
+    // creates can't both claim the same number.
     await tx({
       _class: 'core:class:TxUpdateDoc',
       _id: genId(),
@@ -210,7 +240,7 @@ export const createIssue: McpToolDefinition = {
       objectId: project._id,
       objectClass: 'tracker:class:Project',
       objectSpace: 'core:space:Space',
-      operations: { sequence: number },
+      operations: { $inc: { sequence: 1 } },
       modifiedBy: social,
       modifiedOn: now(),
     });
@@ -231,8 +261,10 @@ export const updateIssue: McpToolDefinition = {
       type: 'object' as const,
       properties: {
         identifier: { type: 'string', description: 'Issue identifier, e.g. DURO-42' },
+        title: { type: 'string', description: 'New title (optional)' },
         status: { type: 'string', description: 'backlog|todo|inprogress|done|cancelled' },
         priority: { type: 'string', description: 'nopriority|urgent|high|medium|low' },
+        assignee: { type: 'string', description: 'Employee ref to assign (optional)' },
       },
       required: ['identifier'],
     },
@@ -242,20 +274,24 @@ export const updateIssue: McpToolDefinition = {
     const issue = await resolveIssue(identifier);
     if (!issue) return err(`issue not found: ${identifier}`);
     const operations: Record<string, unknown> = {};
+    if (args.title != null) operations.title = String(args.title);
+    if (args.assignee != null) operations.assignee = String(args.assignee);
     if (args.status != null) {
-      if (!(String(args.status).toLowerCase() in STATUS_CATEGORY)) {
+      if (!(String(args.status).toLowerCase() in WORD_TO_CATEGORY)) {
         return err(`unknown status: ${String(args.status)}`);
       }
       const project = await findOne<Project>('tracker:class:Project', { _id: issue.space });
       if (!project) return err(`project for ${identifier} not found`);
-      operations.status = statusFor(await projectMeta(project), String(args.status));
+      const meta = await projectMeta(project);
+      if (!meta) return err(`project ${project.identifier} has no Issue task type`);
+      operations.status = statusFor(meta, String(args.status));
     }
     if (args.priority != null) {
       const p = PRIORITY[String(args.priority).toLowerCase()];
       if (p == null) return err(`unknown priority: ${String(args.priority)}`);
       operations.priority = p;
     }
-    if (Object.keys(operations).length === 0) return err('nothing to update (status or priority)');
+    if (Object.keys(operations).length === 0) return err('nothing to update (title, status, priority, or assignee)');
     await tx({
       _class: 'core:class:TxUpdateDoc',
       _id: genId(),
@@ -315,7 +351,7 @@ export const commentIssue: McpToolDefinition = {
       objectId: issue._id,
       objectClass: 'tracker:class:Issue',
       objectSpace: issue.space,
-      operations: { comments: (issue.comments ?? 0) + 1 },
+      operations: { $inc: { comments: 1 } },
       modifiedBy: social,
       modifiedOn: now(),
     });
@@ -323,4 +359,61 @@ export const commentIssue: McpToolDefinition = {
   },
 };
 
-registerTools([listIssues, createIssue, updateIssue, commentIssue]);
+export const listProjects: McpToolDefinition = {
+  tool: {
+    name: 'huly_list_projects',
+    description: 'List the Huly projects the bot can see. Returns identifier and name for use as the `project` arg.',
+    inputSchema: { type: 'object' as const, properties: {} },
+  },
+  async handler() {
+    const projects = await findAll<Project>('tracker:class:Project', {}, { limit: 500 });
+    return ok(
+      JSON.stringify(
+        projects.map((p) => ({ identifier: p.identifier, name: p.name })),
+        null,
+        2,
+      ),
+    );
+  },
+};
+
+export const getIssue: McpToolDefinition = {
+  tool: {
+    name: 'huly_get_issue',
+    description: 'Get a single Huly issue by identifier (e.g. "DURO-42") with status, priority, and assignee.',
+    inputSchema: {
+      type: 'object' as const,
+      properties: { identifier: { type: 'string', description: 'Issue identifier, e.g. DURO-42' } },
+      required: ['identifier'],
+    },
+  },
+  async handler(args) {
+    const identifier = String(args.identifier ?? '');
+    const resolved = await resolveIssue(identifier);
+    if (!resolved) return err(`issue not found: ${identifier}`);
+    const issue = await findOne<Record<string, unknown>>('tracker:class:Issue', { _id: resolved._id });
+    if (!issue) return err(`issue not found: ${identifier}`);
+    const project = await findOne<Project>('tracker:class:Project', { _id: resolved.space });
+    const meta = project ? await projectMeta(project) : null;
+    return ok(
+      JSON.stringify(
+        {
+          identifier,
+          title: issue.title,
+          status: statusWord(meta?.categoryById[String(issue.status)]),
+          priority: priorityWord(issue.priority as number),
+          assignee: issue.assignee ?? null,
+          dueDate: issue.dueDate ?? null,
+          comments: issue.comments ?? 0,
+          // The rich description body lives in the collaborator service; open the
+          // issue in Huly to read it. (Reading the blob over REST is not yet wired.)
+          hasDescription: issue.description != null,
+        },
+        null,
+        2,
+      ),
+    );
+  },
+};
+
+registerTools([listProjects, listIssues, getIssue, createIssue, updateIssue, commentIssue]);

@@ -8,6 +8,7 @@
 import './tools/issues.js';
 import './tools/todos.js';
 import './tools/docs.js';
+import './tools/members.js';
 import { hulyConfigured } from './client.js';
 import { startHulyMcpServer } from './server.js';
 

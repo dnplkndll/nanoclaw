@@ -11,11 +11,36 @@ import { registerTools } from '../server.js';
 import type { McpToolDefinition } from '../types.js';
 import { err, ok } from '../util.js';
 
-async function resolveTeamspace(idOrName: string): Promise<{ _id: string } | null> {
-  const byId = await findOne<{ _id: string }>('document:class:Teamspace', { _id: idOrName });
-  if (byId) return byId;
-  return findOne<{ _id: string }>('document:class:Teamspace', { name: idOrName });
+interface Teamspace {
+  _id: string;
+  name?: string;
 }
+
+async function resolveTeamspace(idOrName: string): Promise<Teamspace | null> {
+  const byId = await findOne<Teamspace>('document:class:Teamspace', { _id: idOrName });
+  if (byId) return byId;
+  // Match by name client-side (find-all name queries are unreliable, like Project.identifier).
+  const all = await findAll<Teamspace>('document:class:Teamspace', {}, { limit: 200 });
+  return all.find((t) => t.name === idOrName) ?? null;
+}
+
+export const listTeamspaces: McpToolDefinition = {
+  tool: {
+    name: 'huly_list_teamspaces',
+    description: 'List the Huly teamspaces the bot can see. Returns name for use as the `teamspace` arg.',
+    inputSchema: { type: 'object' as const, properties: {} },
+  },
+  async handler() {
+    const spaces = await findAll<Teamspace>('document:class:Teamspace', {}, { limit: 200 });
+    return ok(
+      JSON.stringify(
+        spaces.map((s) => ({ name: s.name, _id: s._id })),
+        null,
+        2,
+      ),
+    );
+  },
+};
 
 export const listDocuments: McpToolDefinition = {
   tool: {
@@ -98,4 +123,4 @@ export const createDocument: McpToolDefinition = {
   },
 };
 
-registerTools([listDocuments, createDocument]);
+registerTools([listTeamspaces, listDocuments, createDocument]);

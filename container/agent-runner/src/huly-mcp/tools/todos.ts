@@ -5,11 +5,13 @@
  * and optionally attached to another doc (commonly an issue). It lives in the
  * shared `time:space:ToDos` space.
  */
-import { findAll, findOne, genId, now, primarySocialId, tx } from '../client.js';
+import { botEmployeeRef, findAll, findOne, genId, now, primarySocialId, tx } from '../client.js';
 import { registerTools } from '../server.js';
 import type { McpToolDefinition } from '../types.js';
 import { err, ok } from '../util.js';
 
+// Note: the todo priority scale differs from the issue one (Huly's ToDoPriority
+// enum vs IssuePriority). Documented in huly.instructions.md.
 const PRIORITY: Record<string, number> = { high: 0, medium: 1, low: 2, nopriority: 3, urgent: 4 };
 
 export const listTodos: McpToolDefinition = {
@@ -52,20 +54,23 @@ export const createTodo: McpToolDefinition = {
       type: 'object' as const,
       properties: {
         title: { type: 'string' },
-        user: { type: 'string', description: 'Employee ref the todo belongs to' },
+        user: {
+          type: 'string',
+          description: "Employee ref the todo belongs to (optional; defaults to the bot's own). See huly_list_members.",
+        },
         attachedTo: { type: 'string', description: 'Issue _id to attach to (optional)' },
         attachedToClass: { type: 'string', description: 'Defaults to tracker:class:Issue when attachedTo is set' },
         priority: { type: 'string', description: 'high|medium|low|nopriority|urgent (default nopriority)' },
       },
-      required: ['title', 'user'],
+      required: ['title'],
     },
   },
   async handler(args) {
     const title = String(args.title ?? '').trim();
-    const user = String(args.user ?? '').trim();
     if (!title) return err('title is required');
-    if (!user) return err('user (Employee ref) is required');
-    const attachedTo = args.attachedTo ? String(args.attachedTo) : 'time:ids:NoAttached';
+    const user = args.user ? String(args.user).trim() : await botEmployeeRef();
+    if (!user) return err('no user given and the bot has no resolvable Employee ref');
+    const attachedTo = args.attachedTo ? String(args.attachedTo) : 'time:ids:NotAttached';
     const attachedToClass = args.attachedTo ? String(args.attachedToClass ?? 'tracker:class:Issue') : 'time:class:ToDo';
     const priority = PRIORITY[String(args.priority ?? 'nopriority').toLowerCase()] ?? PRIORITY.nopriority;
     const todoId = genId();
