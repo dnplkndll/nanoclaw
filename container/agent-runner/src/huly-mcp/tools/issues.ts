@@ -50,6 +50,35 @@ interface Project {
   name?: string;
 }
 
+/**
+ * Build an assignee-ref → display-name lookup. Issue.assignee is meant to be an
+ * Employee ref (Person _id), but existing data also stores account uuids and
+ * social ids, so index the member by all three so any of them resolves.
+ */
+async function nameResolver(): Promise<(ref: unknown) => string | null> {
+  const employees = await findAll<{ _id: string; name?: string; personUuid?: string }>(
+    'contact:mixin:Employee',
+    {},
+    { limit: 500 },
+  );
+  const byRef = new Map<string, string>();
+  for (const e of employees) {
+    if (!e.name) continue;
+    byRef.set(e._id, e.name);
+    if (e.personUuid) byRef.set(e.personUuid, e.name);
+  }
+  const socialIds = await findAll<{ _id: string; attachedTo?: string }>(
+    'contact:class:SocialIdentity',
+    {},
+    { limit: 1000 },
+  );
+  for (const s of socialIds) {
+    const name = s.attachedTo && byRef.get(s.attachedTo);
+    if (name) byRef.set(s._id, name);
+  }
+  return (ref) => (typeof ref === 'string' && ref ? (byRef.get(ref) ?? null) : null);
+}
+
 interface IssueStatus {
   _id: string;
   category?: string;
@@ -146,6 +175,7 @@ export const listIssues: McpToolDefinition = {
     const project = await resolveProject(String(args.project ?? ''));
     if (!project) return err(`project not found: ${String(args.project)}`);
     const meta = await projectMeta(project);
+    const nameOf = await nameResolver();
     const issues = await findAll<Record<string, unknown>>(
       'tracker:class:Issue',
       { space: project._id },
@@ -157,7 +187,7 @@ export const listIssues: McpToolDefinition = {
       // Report status/priority in the same vocabulary the write tools accept.
       status: statusWord(meta?.categoryById[String(i.status)]),
       priority: priorityWord(i.priority as number),
-      assignee: i.assignee,
+      assignee: i.assignee ? (nameOf(i.assignee) ?? i.assignee) : null,
     }));
     return ok(JSON.stringify(rows, null, 2));
   },
@@ -395,6 +425,7 @@ export const getIssue: McpToolDefinition = {
     if (!issue) return err(`issue not found: ${identifier}`);
     const project = await findOne<Project>('tracker:class:Project', { _id: resolved.space });
     const meta = project ? await projectMeta(project) : null;
+    const nameOf = await nameResolver();
     return ok(
       JSON.stringify(
         {
@@ -402,7 +433,7 @@ export const getIssue: McpToolDefinition = {
           title: issue.title,
           status: statusWord(meta?.categoryById[String(issue.status)]),
           priority: priorityWord(issue.priority as number),
-          assignee: issue.assignee ?? null,
+          assignee: issue.assignee ? (nameOf(issue.assignee) ?? issue.assignee) : null,
           dueDate: issue.dueDate ?? null,
           comments: issue.comments ?? 0,
           // The rich description body lives in the collaborator service; open the
