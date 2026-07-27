@@ -495,14 +495,19 @@ async function buildContainerArgs(
   // Huly integration — pass the bot credentials to the bundled Huly MCP.
   // Deliberate exception to the minimal-env rule: the MCP needs a credential
   // to reach the Huly REST API. The token is a scoped-grant, expiring JWT
-  // (USER role, limited spaces) so the blast radius is bounded. Only injected
-  // when configured; absent otherwise so the bundled MCP stays disabled.
+  // (USER role, limited spaces) so the blast radius is bounded. Passed via a
+  // 0600 --env-file rather than `-e` so the JWT never lands in the process
+  // argv (readable via `ps`/proc). Only injected when configured.
   {
     const hulyEnv = readEnvFile(['HULY_URL', 'HULY_TOKEN', 'HULY_WORKSPACE']);
     if (hulyEnv.HULY_URL && hulyEnv.HULY_TOKEN && hulyEnv.HULY_WORKSPACE) {
-      for (const key of ['HULY_URL', 'HULY_TOKEN', 'HULY_WORKSPACE'] as const) {
-        args.push('-e', `${key}=${hulyEnv[key]}`);
-      }
+      const hulyEnvFile = path.join(DATA_DIR, 'huly.env');
+      fs.writeFileSync(
+        hulyEnvFile,
+        ['HULY_URL', 'HULY_TOKEN', 'HULY_WORKSPACE'].map((k) => `${k}=${hulyEnv[k]}`).join('\n') + '\n',
+        { mode: 0o600 },
+      );
+      args.push('--env-file', hulyEnvFile);
     }
   }
 

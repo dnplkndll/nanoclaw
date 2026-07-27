@@ -26,7 +26,7 @@ expiring). Minting signs with the Huly **server secret**, so run this yourself a
 the operator:
 
 ```sh
-HULY_SERVER_SECRET=<server-secret> node setup/huly.ts \
+HULY_SERVER_SECRET=<server-secret> pnpm exec tsx setup/huly.ts \
   --url https://huly.hz.ledoweb.com \
   --workspace <workspace-uuid> \
   --account <bot-account-uuid> \
@@ -63,10 +63,11 @@ ncl groups restart <group-id>  # container: picks up the bundled MCP
 
 ## What the agent gets
 
-MCP tools (prefix `huly_`): `list_issues`, `create_issue`, `update_issue`,
-`comment_issue`, `list_todos`, `create_todo`, `complete_todo`, `list_documents`,
-`create_document`. Usage guidance is auto-composed into the agent's CLAUDE.md
-from `huly.instructions.md`.
+MCP tools (prefix `huly_`): `list_projects`, `list_issues`, `get_issue`,
+`create_issue`, `update_issue`, `comment_issue`, `list_todos`, `create_todo`,
+`complete_todo`, `list_teamspaces`, `list_documents`, `create_document`,
+`whoami`, `list_members`. Usage guidance is auto-composed into the agent's
+CLAUDE.md from `huly.instructions.md`.
 
 Chat: message the bot in a Huly channel it belongs to; @-mention it to engage in
 group channels (group wirings use mention mode). Replies land back in the channel.
@@ -75,6 +76,12 @@ group channels (group wirings use mention mode). Replies land back in the channe
 
 - **Poll latency** — Huly's REST API has no push, so the channel adapter polls
   (~12 s). Fine for an assistant; not instant.
+- **Chat replies are plain text** — the host adapter can't import the container's
+  markdown converter (runtime boundary), so agent replies post as plain text;
+  `**bold**`/lists render literally in the channel. Issue/doc bodies (via the MCP)
+  do render markdown.
+- **Group chat only** — the adapter ingests `chunter:class:Channel` messages, not
+  direct messages, and engages on @-mention.
 - **Legacy chunter only** — built for classic chunter channels (our instance).
   Channels migrated to the newer card/communication system aren't polled; they'd
   need the `createMessage` domain-event path instead.

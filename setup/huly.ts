@@ -1,6 +1,8 @@
-#!/usr/bin/env node
+#!/usr/bin/env -S npx tsx
 /**
  * Provision a NanoClaw bot in Huly and mint its scoped-grant token.
+ *
+ * Run with tsx (this file is TypeScript): `pnpm exec tsx setup/huly.ts ...`.
  *
  * This mints a JWT signed with the Huly server secret, so it is intended to
  * be run by an operator who holds that secret — not by an automated agent.
@@ -58,6 +60,10 @@ function main(): void {
     .map((s) => s.trim())
     .filter(Boolean);
   const days = parseInt(arg('days', '90'), 10);
+  if (!Number.isFinite(days) || days < 1) {
+    console.error(`--days must be a positive integer (got "${arg('days', '90')}")`);
+    process.exit(1);
+  }
 
   const nowSec = Math.floor(Date.now() / 1000);
   const token = sign(
