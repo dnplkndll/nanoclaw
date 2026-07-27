@@ -77,7 +77,7 @@ function saveHighWater(hw: Record<string, number>): void {
   }
 }
 
-function plainText(prosemirror: string): string {
+export function plainText(prosemirror: string): string {
   // Best-effort flatten of a ProseMirror doc to text for the agent.
   try {
     const doc = JSON.parse(prosemirror);
@@ -99,11 +99,56 @@ function plainText(prosemirror: string): string {
   }
 }
 
+interface PollMessage {
+  _id: string;
+  createdOn?: number;
+  createdBy?: string;
+  modifiedBy?: string;
+}
+
+/**
+ * Pure selection of messages to route inbound: newer than the mark and not
+ * authored by the bot, oldest first. Extracted so the echo-loop guard is
+ * unit-testable without a live server.
+ */
+export function selectFresh<T extends PollMessage>(msgs: T[], mark: number, botSocialId: string): T[] {
+  return msgs
+    .filter((m) => (m.createdOn ?? 0) > mark)
+    .filter((m) => (m.createdBy ?? m.modifiedBy) !== botSocialId)
+    .sort((a, b) => (a.createdOn ?? 0) - (b.createdOn ?? 0));
+}
+
+/**
+ * True when the message's ProseMirror markup @-mentions the bot. Huly mentions
+ * are `reference` nodes whose `id` attr is the mentioned Person's _id, so we
+ * match against the bot's Person ref (NOT its account uuid, which never
+ * appears in the markup).
+ */
+export function mentionsBot(messageJson: string, botPersonRef: string): boolean {
+  if (!botPersonRef) return false;
+  try {
+    let hit = false;
+    const walk = (n: unknown): void => {
+      if (hit || n == null || typeof n !== 'object') return;
+      const node = n as Record<string, unknown>;
+      if (node.type === 'reference' && node.attrs && typeof node.attrs === 'object') {
+        if ((node.attrs as Record<string, unknown>).id === botPersonRef) hit = true;
+      }
+      if (Array.isArray(node.content)) node.content.forEach(walk);
+    };
+    walk(JSON.parse(messageJson));
+    return hit;
+  } catch {
+    return false;
+  }
+}
+
 function createAdapter(cfg: HulyConfig): ChannelAdapter {
   const txBase = `${cfg.url}/_transactor/api/v1`;
   const headers = { Authorization: `Bearer ${cfg.token}`, 'Content-Type': 'application/json' };
   let timer: ReturnType<typeof setInterval> | null = null;
-  let botAccount = '';
+  let polling = false;
+  let botPersonRef = '';
   let botSocialId = '';
   const highWater = loadHighWater();
 
@@ -143,39 +188,41 @@ function createAdapter(cfg: HulyConfig): ChannelAdapter {
   }
 
   async function pollOnce(config: ChannelSetup): Promise<void> {
-    const channels = await findAll<{ _id: string; name?: string }>('chunter:class:Channel', {}, { limit: 100 });
-    for (const ch of channels) {
-      const msgs = await findAll<ChatMessage>(
-        'chunter:class:ChatMessage',
-        { space: ch._id },
-        { limit: 20, sort: { createdOn: -1 } },
-      );
-      // Seed the mark on first sight so we don't replay history.
-      if (highWater[ch._id] === undefined) {
-        highWater[ch._id] = msgs.reduce((max, m) => Math.max(max, m.createdOn ?? 0), 0);
-        if (ch.name) config.onMetadata(`huly:${ch._id}`, ch.name, true);
-        continue;
+    // Reentrancy guard: a slow poll must not overlap the next interval tick,
+    // or both would emit the same messages and race the high-water map.
+    if (polling) return;
+    polling = true;
+    try {
+      const channels = await findAll<{ _id: string; name?: string }>('chunter:class:Channel', {}, { limit: 100 });
+      for (const ch of channels) {
+        const msgs = await findAll<ChatMessage>(
+          'chunter:class:ChatMessage',
+          { space: ch._id },
+          { limit: 20, sort: { createdOn: -1 } },
+        );
+        // Seed the mark on first sight so we don't replay history.
+        if (highWater[ch._id] === undefined) {
+          highWater[ch._id] = msgs.reduce((max, m) => Math.max(max, m.createdOn ?? 0), 0);
+          if (ch.name) config.onMetadata(`huly:${ch._id}`, ch.name, true);
+          continue;
+        }
+        for (const m of selectFresh(msgs, highWater[ch._id], botSocialId)) {
+          const inbound: InboundMessage = {
+            id: m._id,
+            kind: 'chat',
+            content: { text: plainText(m.message), from: m.createdBy ?? m.modifiedBy, channel: ch.name ?? ch._id },
+            timestamp: new Date(m.createdOn ?? Date.now()).toISOString(),
+            isMention: mentionsBot(m.message, botPersonRef),
+            isGroup: true,
+          };
+          await config.onInbound(`huly:${ch._id}`, null, inbound);
+          highWater[ch._id] = Math.max(highWater[ch._id], m.createdOn ?? 0);
+        }
       }
-      const fresh = msgs
-        .filter((m) => (m.createdOn ?? 0) > highWater[ch._id])
-        .filter((m) => (m.createdBy ?? m.modifiedBy) !== botSocialId)
-        .sort((a, b) => (a.createdOn ?? 0) - (b.createdOn ?? 0));
-      for (const m of fresh) {
-        const text = plainText(m.message);
-        const isMention = botAccount !== '' && m.message.includes(botAccount);
-        const inbound: InboundMessage = {
-          id: m._id,
-          kind: 'chat',
-          content: { text, from: m.createdBy ?? m.modifiedBy, channel: ch.name ?? ch._id },
-          timestamp: new Date(m.createdOn ?? Date.now()).toISOString(),
-          isMention,
-          isGroup: true,
-        };
-        await config.onInbound(`huly:${ch._id}`, null, inbound);
-        highWater[ch._id] = Math.max(highWater[ch._id], m.createdOn ?? 0);
-      }
+      saveHighWater(highWater);
+    } finally {
+      polling = false;
     }
-    saveHighWater(highWater);
   }
 
   const adapter: ChannelAdapter = {
@@ -186,9 +233,16 @@ function createAdapter(cfg: HulyConfig): ChannelAdapter {
 
     async setup(config: ChannelSetup): Promise<void> {
       const acct = (await get('account')) as { uuid?: string; primarySocialId?: string };
-      botAccount = acct?.uuid ?? '';
       botSocialId = acct?.primarySocialId ?? '';
-      log.info('Huly channel connected', { workspace: cfg.workspace, botAccount });
+      // Fail hard rather than default to '': an empty social id would make the
+      // echo filter admit the bot's own replies, causing an infinite loop.
+      if (!botSocialId) throw new Error('Huly account has no primarySocialId; refusing to start channel');
+      // Resolve the bot's Person ref (mentions reference the Person _id).
+      const identity = (
+        await findAll<{ attachedTo?: string }>('contact:class:SocialIdentity', { _id: botSocialId }, { limit: 1 })
+      )[0];
+      botPersonRef = identity?.attachedTo ?? '';
+      log.info('Huly channel connected', { workspace: cfg.workspace, botPersonRef });
       // Prime high-water marks without emitting, then poll on an interval.
       await pollOnce(config).catch((err) => log.warn('Huly initial poll failed', { err }));
       timer = setInterval(() => {
@@ -230,8 +284,9 @@ function createAdapter(cfg: HulyConfig): ChannelAdapter {
         modifiedBy: botSocialId,
         modifiedOn: Date.now(),
       });
-      // Don't let our own reply come back as inbound next poll.
-      highWater[channelId] = Math.max(highWater[channelId] ?? 0, Date.now());
+      // The bot's own reply is excluded from the next poll by the author filter
+      // (createdBy === botSocialId) in selectFresh — no high-water bump needed,
+      // which also avoids dropping a user message posted in the same window.
       return msgId;
     },
   };
