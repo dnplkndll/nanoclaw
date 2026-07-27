@@ -28,6 +28,7 @@ import { getContainerConfig } from './db/container-configs.js';
 import { updateContainerConfigScalars } from './db/container-configs.js';
 import { CONTAINER_RUNTIME_BIN, hostGatewayArgs, readonlyMountArgs, stopContainer } from './container-runtime.js';
 import { EGRESS_NETWORK, egressNetworkArgs, ensureEgressNetwork } from './egress-lockdown.js';
+import { readEnvFile } from './env.js';
 import { composeGroupClaudeMd } from './claude-md-compose.js';
 import { getAgentGroup } from './db/agent-groups.js';
 import { getDb, hasTable } from './db/connection.js';
@@ -488,6 +489,25 @@ async function buildContainerArgs(
   if (providerContribution.env) {
     for (const [key, value] of Object.entries(providerContribution.env)) {
       args.push('-e', `${key}=${value}`);
+    }
+  }
+
+  // Huly integration — pass the bot credentials to the bundled Huly MCP.
+  // Deliberate exception to the minimal-env rule: the MCP needs a credential
+  // to reach the Huly REST API. The token is a scoped-grant, expiring JWT
+  // (USER role, limited spaces) so the blast radius is bounded. Passed via a
+  // 0600 --env-file rather than `-e` so the JWT never lands in the process
+  // argv (readable via `ps`/proc). Only injected when configured.
+  {
+    const hulyEnv = readEnvFile(['HULY_URL', 'HULY_TOKEN', 'HULY_WORKSPACE']);
+    if (hulyEnv.HULY_URL && hulyEnv.HULY_TOKEN && hulyEnv.HULY_WORKSPACE) {
+      const hulyEnvFile = path.join(DATA_DIR, 'huly.env');
+      fs.writeFileSync(
+        hulyEnvFile,
+        ['HULY_URL', 'HULY_TOKEN', 'HULY_WORKSPACE'].map((k) => `${k}=${hulyEnv[k]}`).join('\n') + '\n',
+        { mode: 0o600 },
+      );
+      args.push('--env-file', hulyEnvFile);
     }
   }
 

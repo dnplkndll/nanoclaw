@@ -92,6 +92,21 @@ async function main(): Promise<void> {
     },
   };
 
+  // Bundled first-party Huly MCP — enabled only when the container was spawned
+  // with Huly credentials (see src/container-runner.ts env passthrough).
+  if (process.env.HULY_TOKEN && process.env.HULY_URL && process.env.HULY_WORKSPACE) {
+    mcpServers.huly = {
+      command: 'bun',
+      args: ['run', path.join(__dirname, 'huly-mcp', 'index.ts')],
+      env: {
+        HULY_URL: process.env.HULY_URL,
+        HULY_TOKEN: process.env.HULY_TOKEN,
+        HULY_WORKSPACE: process.env.HULY_WORKSPACE,
+      },
+    };
+    log('Bundled MCP server: huly');
+  }
+
   for (const [name, serverConfig] of Object.entries(config.mcpServers)) {
     mcpServers[name] = serverConfig;
     log(`Additional MCP server: ${name} (${serverConfig.command})`);

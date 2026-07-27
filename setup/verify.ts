@@ -15,12 +15,7 @@ import { DATA_DIR } from '../src/config.js';
 import { readEnvFile } from '../src/env.js';
 import { log } from '../src/log.js';
 import { getLaunchdLabel, getSystemdUnit } from '../src/install-slug.js';
-import {
-  getPlatform,
-  getServiceManager,
-  hasSystemd,
-  isRoot,
-} from './platform.js';
+import { getPlatform, getServiceManager, hasSystemd, isRoot } from './platform.js';
 import { emitStatus } from './status.js';
 
 export async function run(_args: string[]): Promise<void> {
@@ -38,11 +33,7 @@ export async function run(_args: string[]): Promise<void> {
   // developers with multiple clones), nothing in this checkout is actually
   // wired up. Surface the mismatch directly so the user knows to point the
   // service at the right folder.
-  let service:
-    | 'not_found'
-    | 'stopped'
-    | 'running'
-    | 'running_other_checkout' = 'not_found';
+  let service: 'not_found' | 'stopped' | 'running' | 'running_other_checkout' = 'not_found';
   let runningFromPath: string | null = null;
   const mgr = getServiceManager();
 
@@ -74,10 +65,7 @@ export async function run(_args: string[]): Promise<void> {
       execSync(`${prefix} is-active ${systemdUnit}`, { stdio: 'ignore' });
       service = 'running';
       try {
-        const pidStr = execSync(
-          `${prefix} show ${systemdUnit} -p MainPID --value`,
-          { encoding: 'utf-8' },
-        ).trim();
+        const pidStr = execSync(`${prefix} show ${systemdUnit} -p MainPID --value`, { encoding: 'utf-8' }).trim();
         const pid = Number(pidStr);
         if (Number.isInteger(pid) && pid > 0) {
           runningFromPath = resolveBinaryScript(pid);
@@ -115,11 +103,7 @@ export async function run(_args: string[]): Promise<void> {
     }
   }
 
-  if (
-    service === 'running' &&
-    runningFromPath &&
-    !isPathInside(runningFromPath, projectRoot)
-  ) {
+  if (service === 'running' && runningFromPath && !isPathInside(runningFromPath, projectRoot)) {
     service = 'running_other_checkout';
   }
 
@@ -160,6 +144,9 @@ export async function run(_args: string[]): Promise<void> {
     'RESEND_API_KEY',
     'WHATSAPP_ACCESS_TOKEN',
     'IMESSAGE_ENABLED',
+    'HULY_TOKEN',
+    'HULY_URL',
+    'HULY_WORKSPACE',
   ]);
 
   const has = (key: string) => !!(process.env[key] || envVars[key]);
@@ -183,6 +170,7 @@ export async function run(_args: string[]): Promise<void> {
   if (has('MATRIX_ACCESS_TOKEN')) channelAuth.matrix = 'configured';
   if (has('RESEND_API_KEY')) channelAuth.resend = 'configured';
   if (has('WHATSAPP_ACCESS_TOKEN')) channelAuth['whatsapp-cloud'] = 'configured';
+  if (has('HULY_TOKEN') && has('HULY_URL') && has('HULY_WORKSPACE')) channelAuth.huly = 'configured';
   if (has('IMESSAGE_ENABLED')) channelAuth.imessage = 'configured';
 
   const configuredChannels = Object.keys(channelAuth);
@@ -209,11 +197,7 @@ export async function run(_args: string[]): Promise<void> {
 
   // 6. Check mount allowlist
   let mountAllowlist = 'missing';
-  if (
-    fs.existsSync(
-      path.join(homeDir, '.config', 'nanoclaw', 'mount-allowlist.json'),
-    )
-  ) {
+  if (fs.existsSync(path.join(homeDir, '.config', 'nanoclaw', 'mount-allowlist.json'))) {
     mountAllowlist = 'configured';
   }
 
